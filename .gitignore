@@ -1,0 +1,30 @@
+.env
+.env.*
+!.env.example
+storage/
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+# Ignore large datasets
+*.csv
+*.xlsx
+*.json
+*.txt
+!mcc_codes.json   # Keep this if it's a small config file
+!requirements.txt # Keep this!
