@@ -11,12 +11,10 @@ from typing import Any, Iterable
 
 import joblib
 import numpy as np
-import torch
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.pipeline import Pipeline
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from app.core.config import Settings
 from app.db.metadata import insert_model
@@ -59,6 +57,10 @@ def model_paths(settings: Settings, model_id: str) -> ModelPaths:
 def _set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
+    try:
+        import torch
+    except Exception:
+        return
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
@@ -66,6 +68,7 @@ def _set_seed(seed: int) -> None:
 
 
 def _batch_tokenize(tokenizer, texts: list[str], max_length: int, device: torch.device) -> dict[str, torch.Tensor]:
+    import torch
     enc = tokenizer(
         texts,
         truncation=True,
@@ -77,6 +80,7 @@ def _batch_tokenize(tokenizer, texts: list[str], max_length: int, device: torch.
 
 
 def _predict_proba(model, tokenizer, texts: list[str], max_length: int, device: torch.device) -> tuple[list[float], list[list[tuple[str, float]]]]:
+    import torch
     model.eval()
     probs: list[float] = []
     explanations: list[list[tuple[str, float]]] = []
@@ -276,6 +280,15 @@ def train_detector(*, settings: Settings, req: DetectorTrainRequest) -> dict[str
     if getattr(req, "backend", "hf_transformer") == "tfidf_logreg":
         return _train_tfidf_logreg(settings=settings, req=req)
 
+    try:
+        import torch
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    except Exception as e:
+        raise ValueError(
+            "hf_transformer backend requires optional dependencies 'torch' and 'transformers'. "
+            "Install them or use backend='tfidf_logreg'."
+        ) from e
+
     logger.info(
         "detector.train.start",
         extra={"backend": "hf_transformer", "dataset_id": req.dataset_id, "seed": int(req.seed)},
@@ -425,6 +438,13 @@ def load_model_bundle(settings: Settings, model_id: str) -> dict[str, Any]:
 
     if not paths.hf_dir.exists() or not paths.tokenizer_dir.exists():
         raise FileNotFoundError(f"Unknown model_id={model_id}")
+    try:
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    except Exception as e:
+        raise ValueError(
+            "hf_transformer backend requires optional dependency 'transformers'. "
+            "Install it or train a tfidf_logreg model instead."
+        ) from e
     tokenizer = AutoTokenizer.from_pretrained(paths.tokenizer_dir)
     model = AutoModelForSequenceClassification.from_pretrained(paths.hf_dir)
     return {"backend": "hf_transformer", "model": model, "tokenizer": tokenizer}
@@ -506,6 +526,13 @@ def infer_detector(
         probs = pipeline.predict_proba(texts)[:, 1].tolist()
         explanations = [_tfidf_explain(pipeline, t) if explain else [] for t in texts]
     else:
+        try:
+            import torch
+        except Exception as e:
+            raise ValueError(
+                "hf_transformer inference requires optional dependency 'torch'. "
+                "Install it or use a tfidf_logreg model."
+            ) from e
         model = bundle["model"]
         tokenizer = bundle["tokenizer"]
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -560,6 +587,13 @@ def evaluate_model_on_dataset(
         pipeline = bundle["pipeline"]
         probs = pipeline.predict_proba(texts)[:, 1].tolist() if len(texts) else []
     else:
+        try:
+            import torch
+        except Exception as e:
+            raise ValueError(
+                "hf_transformer evaluation requires optional dependency 'torch'. "
+                "Install it or use a tfidf_logreg model."
+            ) from e
         model = bundle["model"]
         tokenizer = bundle["tokenizer"]
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
