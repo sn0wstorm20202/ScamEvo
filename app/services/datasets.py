@@ -17,7 +17,7 @@ from sklearn.model_selection import train_test_split
 from app.core.config import Settings
 from app.db.metadata import insert_dataset
 from app.schemas.dataset import DatasetUploadOptions
-from app.services.jsonl import write_jsonl
+from app.services.jsonl import read_jsonl, write_jsonl
 
 
 CANONICAL_REQUIRED_FIELDS = {"id", "text", "label", "source"}
@@ -53,6 +53,13 @@ def _normalize_label(raw: Any, opts: DatasetUploadOptions) -> Optional[int]:
 
     if s in {"0", "1"}:
         return int(s)
+
+    try:
+        f = float(s)
+        if f in {0.0, 1.0}:
+            return int(f)
+    except Exception:
+        pass
 
     return None
 
@@ -481,3 +488,71 @@ def load_dataset_meta(settings: Settings, dataset_id: str) -> dict[str, Any]:
     if not paths.meta_path.exists():
         raise FileNotFoundError(f"Unknown dataset_id={dataset_id}")
     return json.loads(paths.meta_path.read_text(encoding="utf-8"))
+
+
+def create_augmented_dataset(
+    *,
+    settings: Settings,
+    base_dataset_id: str,
+    added_train_rows: list[dict[str, Any]],
+    dataset_name: str | None = None,
+    seed: int = 1337,
+) -> dict[str, Any]:
+    base_meta = load_dataset_meta(settings, base_dataset_id)
+    base_paths = dataset_paths(settings, base_dataset_id)
+
+    base_train = list(read_jsonl(base_paths.train_path))
+    base_eval = list(read_jsonl(base_paths.eval_path))
+    base_holdout = list(read_jsonl(base_paths.holdout_path))
+
+    dataset_id = str(uuid.uuid4())
+    version = "v1"
+    created_at = _utc_now_iso()
+
+    paths = dataset_paths(settings, dataset_id)
+    paths.root_dir.mkdir(parents=True, exist_ok=True)
+
+    train_rows = base_train + list(added_train_rows)
+    random.Random(seed).shuffle(train_rows)
+
+    write_jsonl(paths.train_path, train_rows)
+    write_jsonl(paths.eval_path, base_eval)
+    write_jsonl(paths.holdout_path, base_holdout)
+
+    all_rows = train_rows + base_eval + base_holdout
+    num_scam = sum(1 for r in all_rows if int(r.get("label", 0)) == 1)
+    num_legit = sum(1 for r in all_rows if int(r.get("label", 0)) == 0)
+
+    meta = {
+        "dataset_id": dataset_id,
+        "version": version,
+        "created_at": created_at,
+        "dataset_name": dataset_name or base_meta.get("dataset_name") or f"augmented_{base_dataset_id}",
+        "source_filename": base_meta.get("source_filename") or "augmented_dataset",
+        "raw_sha256": base_meta.get("raw_sha256"),
+        "parent_dataset_id": base_dataset_id,
+        "augmentation": {
+            "num_added_train": int(len(added_train_rows)),
+        },
+        "num_samples": int(len(all_rows)),
+        "num_scam": int(num_scam),
+        "num_legit": int(num_legit),
+        "splits": {"train": len(train_rows), "eval": len(base_eval), "holdout": len(base_holdout)},
+        "label_mapping": base_meta.get("label_mapping") or {},
+        "split_config": base_meta.get("split_config") or {},
+    }
+
+    paths.meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    insert_dataset(
+        settings=settings,
+        dataset_id=dataset_id,
+        version=version,
+        created_at=created_at,
+        source_filename=str(meta.get("source_filename") or "augmented_dataset"),
+        num_samples=int(len(all_rows)),
+        num_scam=int(num_scam),
+        num_legit=int(num_legit),
+    )
+
+    return meta

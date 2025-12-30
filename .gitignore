@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+datasets/
 storage/
 __pycache__/
 *.py[cod]
@@ -21,10 +22,3 @@ dist/
 .vscode/
 Thumbs.db
 .DS_Store
-# Ignore large datasets
-*.csv
-*.xlsx
-*.json
-*.txt
-!mcc_codes.json   # Keep this if it's a small config file
-!requirements.txt # Keep this!

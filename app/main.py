@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import get_settings
+from app.core.request_id import RequestIdMiddleware
+from app.core.structured_logging import configure_logging
 from app.core.paths import ensure_storage_layout
 from app.db.metadata import init_db
 
@@ -10,7 +12,11 @@ from app.db.metadata import init_db
 def create_app() -> FastAPI:
     settings = get_settings()
 
+    configure_logging()
+
     app = FastAPI(title=settings.app_name)
+
+    app.add_middleware(RequestIdMiddleware)
 
     app.add_middleware(
         CORSMiddleware,

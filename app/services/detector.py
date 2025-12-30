@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import uuid
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from app.schemas.detector import DetectorTrainRequest
 from app.services.datasets import dataset_paths
 from app.services.jsonl import read_jsonl
 
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ModelPaths:
@@ -138,6 +140,10 @@ def _tfidf_explain(pipeline: Pipeline, text: str, top_k: int = 12) -> list[tuple
 
 
 def _train_tfidf_logreg(*, settings: Settings, req: DetectorTrainRequest) -> dict[str, Any]:
+    logger.info(
+        "detector.train.start",
+        extra={"backend": "tfidf_logreg", "dataset_id": req.dataset_id, "seed": int(req.seed)},
+    )
     dataset_meta_path = dataset_paths(settings, req.dataset_id).meta_path
     if not dataset_meta_path.exists():
         raise FileNotFoundError(f"Unknown dataset_id={req.dataset_id}")
@@ -155,10 +161,47 @@ def _train_tfidf_logreg(*, settings: Settings, req: DetectorTrainRequest) -> dic
     texts_train = [r["text"] for r in train_rows]
     y_train = np.array([int(r["label"]) for r in train_rows], dtype=np.int64)
 
+    ngram_min = int(getattr(req, "tfidf_ngram_min", 1))
+    ngram_max = int(getattr(req, "tfidf_ngram_max", 2))
+    if ngram_min <= 0:
+        ngram_min = 1
+    if ngram_max < ngram_min:
+        ngram_max = ngram_min
+
+    max_features = int(getattr(req, "tfidf_max_features", 50000))
+    if max_features <= 0:
+        max_features = 50000
+
+    analyzer = str(getattr(req, "tfidf_analyzer", "word")).strip().lower()
+    if analyzer not in {"word", "char_wb"}:
+        analyzer = "word"
+
+    logreg_c = float(getattr(req, "logreg_c", 1.0))
+    if logreg_c <= 0:
+        logreg_c = 1.0
+
+    logreg_class_weight = getattr(req, "logreg_class_weight", None)
+
     pipeline = Pipeline(
         [
-            ("tfidf", TfidfVectorizer(ngram_range=(1, 2), max_features=50000)),
-            ("clf", LogisticRegression(max_iter=500, solver="liblinear", random_state=req.seed)),
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    analyzer=analyzer,
+                    ngram_range=(ngram_min, ngram_max),
+                    max_features=max_features,
+                ),
+            ),
+            (
+                "clf",
+                LogisticRegression(
+                    max_iter=500,
+                    solver="liblinear",
+                    random_state=req.seed,
+                    C=logreg_c,
+                    class_weight=logreg_class_weight,
+                ),
+            ),
         ]
     )
     pipeline.fit(texts_train, y_train)
@@ -214,6 +257,11 @@ def _train_tfidf_logreg(*, settings: Settings, req: DetectorTrainRequest) -> dic
         metrics_path=str(paths.metrics_path),
     )
 
+    logger.info(
+        "detector.train.complete",
+        extra={"backend": "tfidf_logreg", "dataset_id": req.dataset_id, "model_id": model_id},
+    )
+
     return {
         "model_id": model_id,
         "version": version,
@@ -227,6 +275,11 @@ def _train_tfidf_logreg(*, settings: Settings, req: DetectorTrainRequest) -> dic
 def train_detector(*, settings: Settings, req: DetectorTrainRequest) -> dict[str, Any]:
     if getattr(req, "backend", "hf_transformer") == "tfidf_logreg":
         return _train_tfidf_logreg(settings=settings, req=req)
+
+    logger.info(
+        "detector.train.start",
+        extra={"backend": "hf_transformer", "dataset_id": req.dataset_id, "seed": int(req.seed)},
+    )
 
     dataset_meta_path = dataset_paths(settings, req.dataset_id).meta_path
     if not dataset_meta_path.exists():
@@ -337,6 +390,11 @@ def train_detector(*, settings: Settings, req: DetectorTrainRequest) -> dict[str
         metrics_path=str(paths.metrics_path),
     )
 
+    logger.info(
+        "detector.train.complete",
+        extra={"backend": "hf_transformer", "dataset_id": req.dataset_id, "model_id": model_id},
+    )
+
     return {
         "model_id": model_id,
         "version": version,
@@ -370,6 +428,29 @@ def load_model_bundle(settings: Settings, model_id: str) -> dict[str, Any]:
     tokenizer = AutoTokenizer.from_pretrained(paths.tokenizer_dir)
     model = AutoModelForSequenceClassification.from_pretrained(paths.hf_dir)
     return {"backend": "hf_transformer", "model": model, "tokenizer": tokenizer}
+
+
+def _load_persisted_threshold(settings: Settings, model_id: str) -> float:
+    paths = model_paths(settings, model_id)
+    if not paths.train_config_path.exists():
+        return 0.5
+    try:
+        cfg = json.loads(paths.train_config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0.5
+    try:
+        t = float(cfg.get("detection_threshold", 0.5))
+    except Exception:
+        return 0.5
+    if t < 0.0:
+        return 0.0
+    if t > 1.0:
+        return 1.0
+    return float(t)
+
+
+def load_persisted_threshold(settings: Settings, model_id: str) -> float:
+    return _load_persisted_threshold(settings, model_id)
 
 
 def evaluate_detector(
@@ -409,8 +490,16 @@ def infer_detector(
     texts: list[str],
     max_length: int | None = None,
     explain: bool = False,
+    detection_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
+    logger.info(
+        "detector.infer.start",
+        extra={"model_id": model_id, "num_texts": int(len(texts)), "explain": bool(explain)},
+    )
     bundle = load_model_bundle(settings, model_id)
+
+    if detection_threshold is None:
+        detection_threshold = _load_persisted_threshold(settings, model_id)
 
     if bundle["backend"] == "tfidf_logreg":
         pipeline = bundle["pipeline"]
@@ -432,12 +521,16 @@ def infer_detector(
         item: dict[str, Any] = {
             "text": text,
             "scam_probability": float(p),
-            "prediction": 1 if float(p) >= 0.5 else 0,
+            "prediction": 1 if float(p) >= float(detection_threshold) else 0,
         }
         if explain:
             item["token_importance"] = [{"token": t, "score": s} for t, s in token_scores]
         items.append(item)
 
+    logger.info(
+        "detector.infer.complete",
+        extra={"model_id": model_id, "num_texts": int(len(texts)), "explain": bool(explain)},
+    )
     return items
 
 
@@ -447,9 +540,16 @@ def evaluate_model_on_dataset(
     model_id: str,
     dataset_id: str,
     split: str,
-    detection_threshold: float,
+    detection_threshold: float | None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    logger.info(
+        "detector.evaluate.start",
+        extra={"model_id": model_id, "dataset_id": dataset_id, "split": split},
+    )
     bundle = load_model_bundle(settings, model_id)
+
+    if detection_threshold is None:
+        detection_threshold = _load_persisted_threshold(settings, model_id)
 
     ds = dataset_paths(settings, dataset_id)
     path = {"train": ds.train_path, "eval": ds.eval_path, "holdout": ds.holdout_path}[split]
@@ -486,4 +586,8 @@ def evaluate_model_on_dataset(
     if paths.false_negatives_path.parent.exists():
         paths.false_negatives_path.write_text(json.dumps(false_negatives, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    logger.info(
+        "detector.evaluate.complete",
+        extra={"model_id": model_id, "dataset_id": dataset_id, "split": split},
+    )
     return metrics, false_negatives

@@ -22,6 +22,15 @@ class DetectorTrainRequest(BaseModel):
 
     detection_threshold: float = 0.5
 
+    tfidf_ngram_min: int = 1
+    tfidf_ngram_max: int = 2
+    tfidf_max_features: int = 50000
+
+    tfidf_analyzer: Literal["word", "char_wb"] = "word"
+
+    logreg_c: float = 1.0
+    logreg_class_weight: Optional[Literal["balanced"]] = None
+
 
 class DetectorTrainResponse(BaseModel):
     model_id: str
@@ -38,6 +47,7 @@ class DetectorInferRequest(BaseModel):
     model_id: str
     texts: list[str] = Field(min_length=1)
     explain: bool = False
+    detection_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class TokenImportance(BaseModel):

@@ -3,10 +3,17 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from app.core.config import get_settings
-from app.core.demo import DEMO_ADVERSARIAL_RUN
+from app.core.demo import DEMO_ADVERSARIAL_RETRAIN, DEMO_ADVERSARIAL_RUN
 from app.db.metadata import list_runs
-from app.schemas.adversarial import AdversarialHistoryResponse, AdversarialRunRequest, AdversarialRunResponse, RunRecord
-from app.services.adversarial import run_adversarial
+from app.schemas.adversarial import (
+    AdversarialHistoryResponse,
+    AdversarialRetrainRequest,
+    AdversarialRetrainResponse,
+    AdversarialRunRequest,
+    AdversarialRunResponse,
+    RunRecord,
+)
+from app.services.adversarial import run_adversarial, run_adversarial_retrain
 
 router = APIRouter(prefix="/adversarial")
 
@@ -29,6 +36,26 @@ def run(req: AdversarialRunRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to run adversarial simulation: {e}")
+
+
+@router.post("/retrain", response_model=AdversarialRetrainResponse)
+def retrain(req: AdversarialRetrainRequest):
+    settings = get_settings()
+    if not settings.research_mode or not settings.do_not_deploy:
+        raise HTTPException(status_code=403, detail="Adversarial engine is disabled")
+
+    if settings.demo_mode:
+        req = req.model_copy(update={k: v for k, v in DEMO_ADVERSARIAL_RETRAIN.items()})
+
+    try:
+        out = run_adversarial_retrain(settings=settings, req=req)
+        return AdversarialRetrainResponse(**out)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run adversarial retraining: {e}")
 
 
 @router.get("/history", response_model=AdversarialHistoryResponse)

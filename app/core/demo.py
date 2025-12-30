@@ -29,3 +29,15 @@ DEMO_ADVERSARIAL_RUN: dict[str, object] = {
     "seed": 1337,
     "dry_run": False,
 }
+
+DEMO_ADVERSARIAL_RETRAIN: dict[str, object] = {
+    "rounds": 1,
+    "seeds_per_round": 10,
+    "candidates_per_seed": 3,
+    "similarity_threshold": 0.0,
+    "require_anchors": False,
+    "hard_max_examples": 25,
+    "seed": 1337,
+    "dry_run": False,
+    "retrain_backend": "tfidf_logreg",
+}

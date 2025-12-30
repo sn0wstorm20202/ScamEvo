@@ -58,6 +58,16 @@ class Settings:
 
     demo_mode: bool
 
+    generator_backend: str
+    generator_mode: str
+
+    llm_provider: str
+    llm_model: str
+    openai_api_key: str | None
+    openai_base_url: str
+
+    llm_timeout_seconds: float
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
@@ -71,7 +81,40 @@ def get_settings() -> Settings:
     runs_dir = storage_dir / "runs"
 
     database_url = os.getenv("SCAMEVO_DATABASE_URL")
+    if database_url is not None:
+        database_url = database_url.strip() or None
     db_path = Path(os.getenv("SCAMEVO_DB_PATH", str(storage_dir / "metadata.sqlite3")))
+
+    generator_backend = str(os.getenv("SCAMEVO_GENERATOR_BACKEND", "rule")).strip().lower()
+    if generator_backend not in {"rule", "llm"}:
+        generator_backend = "rule"
+
+    generator_mode = str(os.getenv("SCAMEVO_GENERATOR_MODE", "paraphrase_with_obfuscation")).strip()
+    if not generator_mode:
+        generator_mode = "paraphrase_with_obfuscation"
+
+    llm_provider = str(os.getenv("SCAMEVO_LLM_PROVIDER", "openai")).strip().lower()
+    if not llm_provider:
+        llm_provider = "openai"
+
+    llm_model = str(os.getenv("SCAMEVO_LLM_MODEL", "gpt-5-mini")).strip()
+    if not llm_model:
+        llm_model = "gpt-5-mini"
+
+    openai_api_key = os.getenv("SCAMEVO_OPENAI_API_KEY")
+    if openai_api_key is not None:
+        openai_api_key = openai_api_key.strip() or None
+
+    openai_base_url = str(os.getenv("SCAMEVO_OPENAI_BASE_URL", "https://api.openai.com/v1")).strip().rstrip("/")
+    if not openai_base_url:
+        openai_base_url = "https://api.openai.com/v1"
+
+    try:
+        llm_timeout_seconds = float(os.getenv("SCAMEVO_LLM_TIMEOUT_SECONDS", "30"))
+    except Exception:
+        llm_timeout_seconds = 30.0
+    if llm_timeout_seconds <= 0:
+        llm_timeout_seconds = 30.0
 
     return Settings(
         app_name=os.getenv("SCAMEVO_APP_NAME", "SCAM-EVO Backend"),
@@ -86,4 +129,12 @@ def get_settings() -> Settings:
         research_mode=_env_bool("SCAMEVO_RESEARCH_MODE", True),
         do_not_deploy=_env_bool("SCAMEVO_DO_NOT_DEPLOY", True),
         demo_mode=_env_bool("SCAMEVO_DEMO_MODE", False),
+
+        generator_backend=generator_backend,
+        generator_mode=generator_mode,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        openai_api_key=openai_api_key,
+        openai_base_url=openai_base_url,
+        llm_timeout_seconds=llm_timeout_seconds,
     )

@@ -36,17 +36,29 @@ Backend is the “brain”. UI is a client.
   - Ingest + normalize + split datasets
   - Produces canonical JSONL and a `meta.json`
 - `app/services/detector.py`
-  - Train transformer classifier
-  - Save HF model/tokenizer
+  - Train detector backends:
+    - TF-IDF + Logistic Regression (`tfidf_logreg`)
+    - HuggingFace transformer classifier (`hf_transformer`, optional)
+  - Save model artifacts (sklearn joblib or HF model/tokenizer)
   - Inference with probability outputs
   - Evaluation metrics + false negatives export
+ - `app/services/generator.py`
+  - Controlled mutation actions (research-gated)
+ - `app/services/adversarial.py`
+  - Round-based mutation + scoring loop (research-gated)
 
 ### 3) Storage
 
 - `storage/raw_datasets/` original uploads
 - `storage/datasets/` normalized + split JSONL
 - `storage/models/` versioned model artifacts
-- `storage/runs/` reserved for adversarial runs (planned)
+- `storage/runs/` adversarial run artifacts
+
+Training scripts (repo root):
+
+- `scripts/train_unified_model.py` build a unified dataset from multiple sources and train a baseline model
+- `scripts/train_best_model.py` offline best-model search (TF-IDF variants + threshold tuning)
+- `scripts/train_best_model_cv.py` GridSearchCV-based best-model search (cross-validated hyperparameter tuning)
 
 ### 4) Metadata DB
 
@@ -90,18 +102,38 @@ Each stored sample is normalized into JSONL rows:
 - `POST /detector/infer`
 - `GET /detector/evaluate?model_id=...&dataset_id=...&split=...`
 
+### Generator (research-gated)
+
+- `POST /generator/mutate`
+
+### Adversarial (research-gated)
+
+- `POST /adversarial/run`
+- `POST /adversarial/retrain`
+- `GET /adversarial/history`
+
+### Robustness
+
+- `GET /robustness/report?run_id=...`
+
 ## What’s planned next (PRD alignment)
 
-- Generator module (`/generator/mutate`)
-  - Controlled mutation actions
-  - Semantic similarity filter (Sentence-BERT)
-  - Scam anchor rules + watermarking
-- Adversarial training engine (`/adversarial/run`, `/adversarial/history`)
-  - Round-based sampling → mutation → scoring → retraining
-  - Full reproducibility (configs + seeds + logs)
-- Robustness module (`/robustness/report`)
+- Adversarial retraining loop
+  - Implemented via `POST /adversarial/retrain` (generate attacks → select hard examples → augment dataset → retrain defender → evaluate deltas)
+- Robustness curves
   - Accuracy vs mutation depth
   - Confidence decay curves
   - FN rate on unseen mutations
-- Explainability module (`/explain/{sample_id}`)
-  - Token importance, highlighting
+- Explainability improvements
+  - Stable span highlighting
+  - Better token normalization
+
+## Current operational notes
+
+- Generator backend selection:
+  - `SCAMEVO_GENERATOR_BACKEND=rule` (default) for fully offline demos
+  - `SCAMEVO_GENERATOR_BACKEND=llm` (optional) requires `SCAMEVO_OPENAI_API_KEY`
+- Threshold consistency:
+  - `detection_threshold` is persisted per model in `storage/models/<model_id>/train_config.json` and used by default.
+- Structured logging:
+  - JSON logs with `X-Request-ID` propagation for correlation across requests.

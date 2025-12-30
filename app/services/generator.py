@@ -8,7 +8,9 @@ from typing import Any, Iterable
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from app.core.config import Settings
 from app.schemas.generator import GeneratorAction
+from app.services.llm_openai import OpenAIError, generate_mutations_openai
 
 
 def _utc_now_iso() -> str:
@@ -241,3 +243,127 @@ def mutate_text(
 
     kept.sort(key=lambda x: x["similarity"], reverse=True)
     return kept[:num_candidates]
+
+
+def _postprocess_external_candidates(
+    *,
+    base_text: str,
+    candidate_texts: Iterable[str],
+    similarity_threshold: float,
+    require_anchors: bool,
+    metadata_base: dict[str, Any],
+) -> list[dict[str, Any]]:
+    base_text = _normalize_ws(base_text)
+    if not base_text:
+        return []
+
+    seen: set[str] = {base_text}
+    cleaned: list[str] = []
+    for t in candidate_texts:
+        tt = _normalize_ws(str(t or ""))
+        if not tt:
+            continue
+        if tt in seen:
+            continue
+        seen.add(tt)
+        if require_anchors and not anchors_pass(tt):
+            continue
+        cleaned.append(tt)
+
+    if not cleaned:
+        return []
+
+    sims = _tfidf_similarities(base_text, cleaned)
+    out: list[dict[str, Any]] = []
+    for t, sim in zip(cleaned, sims, strict=False):
+        if float(sim) < float(similarity_threshold):
+            continue
+        md = dict(metadata_base)
+        md["synthetic"] = True
+        md["watermark"] = "SCAMEVO_SYNTH_v1"
+        md["created_at"] = _utc_now_iso()
+        out.append(
+            {
+                "text": t,
+                "similarity": float(sim),
+                "actions": [],
+                "metadata": md,
+            }
+        )
+
+    out.sort(key=lambda x: x["similarity"], reverse=True)
+    return out
+
+
+def mutate_text_with_backend(
+    *,
+    settings: Settings,
+    base_text: str,
+    num_candidates: int,
+    seed: int,
+    actions: list[GeneratorAction],
+    similarity_threshold: float,
+    require_anchors: bool,
+) -> list[dict[str, Any]]:
+    if str(settings.generator_backend).lower() != "llm":
+        return mutate_text(
+            base_text=base_text,
+            num_candidates=num_candidates,
+            seed=seed,
+            actions=actions,
+            similarity_threshold=similarity_threshold,
+            require_anchors=require_anchors,
+        )
+
+    provider = str(settings.llm_provider).strip().lower()
+    if provider != "openai":
+        return mutate_text(
+            base_text=base_text,
+            num_candidates=num_candidates,
+            seed=seed,
+            actions=actions,
+            similarity_threshold=similarity_threshold,
+            require_anchors=require_anchors,
+        )
+
+    try:
+        raw_texts = generate_mutations_openai(
+            settings=settings,
+            base_text=base_text,
+            num_candidates=num_candidates,
+            seed=seed,
+            mode=settings.generator_mode,
+        )
+        llm_candidates = _postprocess_external_candidates(
+            base_text=base_text,
+            candidate_texts=raw_texts,
+            similarity_threshold=similarity_threshold,
+            require_anchors=require_anchors,
+            metadata_base={
+                "generator": "llm_openai",
+                "provider": provider,
+                "model": settings.llm_model,
+                "mode": settings.generator_mode,
+            },
+        )
+        if llm_candidates:
+            return llm_candidates[:num_candidates]
+    except OpenAIError:
+        pass
+    except Exception:
+        pass
+
+    fallback = mutate_text(
+        base_text=base_text,
+        num_candidates=num_candidates,
+        seed=seed,
+        actions=actions,
+        similarity_threshold=similarity_threshold,
+        require_anchors=require_anchors,
+    )
+    for c in fallback:
+        md = c.get("metadata") or {}
+        if isinstance(md, dict):
+            md.setdefault("generator_backend", "fallback_rule")
+            c["metadata"] = md
+    return fallback

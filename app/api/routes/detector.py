@@ -36,7 +36,13 @@ def train(req: DetectorTrainRequest):
 def infer(req: DetectorInferRequest):
     settings = get_settings()
     try:
-        items = infer_detector(settings=settings, model_id=req.model_id, texts=req.texts, explain=req.explain)
+        items = infer_detector(
+            settings=settings,
+            model_id=req.model_id,
+            texts=req.texts,
+            explain=req.explain,
+            detection_threshold=req.detection_threshold,
+        )
         return DetectorInferResponse(model_id=req.model_id, items=items)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -45,7 +51,7 @@ def infer(req: DetectorInferRequest):
 
 
 @router.get("/evaluate", response_model=DetectorEvaluateResponse)
-def evaluate(model_id: str, dataset_id: str, split: str = "holdout", detection_threshold: float = 0.5):
+def evaluate(model_id: str, dataset_id: str, split: str = "holdout", detection_threshold: float | None = None):
     settings = get_settings()
 
     if settings.demo_mode:
