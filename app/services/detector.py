@@ -10,12 +10,21 @@ from typing import Any, Iterable
 
 import joblib
 import numpy as np
-import torch
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.pipeline import Pipeline
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+try:
+    import torch  # type: ignore
+except Exception:
+    torch = None
+
+try:
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer  # type: ignore
+except Exception:
+    AutoModelForSequenceClassification = None
+    AutoTokenizer = None
 
 from app.core.config import Settings
 from app.db.metadata import insert_model
@@ -40,6 +49,13 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _require_hf_deps() -> None:
+    if torch is None or AutoTokenizer is None or AutoModelForSequenceClassification is None:
+        raise RuntimeError(
+            "hf_transformer backend requires 'torch' and 'transformers'. Install them or use backend='tfidf_logreg'."
+        )
+
+
 def model_paths(settings: Settings, model_id: str) -> ModelPaths:
     root = settings.models_dir / model_id
     return ModelPaths(
@@ -55,6 +71,7 @@ def model_paths(settings: Settings, model_id: str) -> ModelPaths:
 
 
 def _set_seed(seed: int) -> None:
+    _require_hf_deps()
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -228,6 +245,8 @@ def train_detector(*, settings: Settings, req: DetectorTrainRequest) -> dict[str
     if getattr(req, "backend", "hf_transformer") == "tfidf_logreg":
         return _train_tfidf_logreg(settings=settings, req=req)
 
+    _require_hf_deps()
+
     dataset_meta_path = dataset_paths(settings, req.dataset_id).meta_path
     if not dataset_meta_path.exists():
         raise FileNotFoundError(f"Unknown dataset_id={req.dataset_id}")
@@ -365,6 +384,8 @@ def load_model_bundle(settings: Settings, model_id: str) -> dict[str, Any]:
         pipeline = joblib.load(paths.sklearn_model_path)
         return {"backend": "tfidf_logreg", "pipeline": pipeline}
 
+    _require_hf_deps()
+
     if not paths.hf_dir.exists() or not paths.tokenizer_dir.exists():
         raise FileNotFoundError(f"Unknown model_id={model_id}")
     tokenizer = AutoTokenizer.from_pretrained(paths.tokenizer_dir)
@@ -417,6 +438,7 @@ def infer_detector(
         probs = pipeline.predict_proba(texts)[:, 1].tolist()
         explanations = [_tfidf_explain(pipeline, t) if explain else [] for t in texts]
     else:
+        _require_hf_deps()
         model = bundle["model"]
         tokenizer = bundle["tokenizer"]
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -460,6 +482,7 @@ def evaluate_model_on_dataset(
         pipeline = bundle["pipeline"]
         probs = pipeline.predict_proba(texts)[:, 1].tolist() if len(texts) else []
     else:
+        _require_hf_deps()
         model = bundle["model"]
         tokenizer = bundle["tokenizer"]
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

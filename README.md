@@ -96,6 +96,58 @@ Optional:
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 ```
 
+## CORS (Frontend integration)
+
+The backend uses env-configured CORS:
+
+- `SCAMEVO_CORS_ORIGINS` (comma-separated list of allowed origins)
+- `SCAMEVO_CORS_ALLOW_CREDENTIALS` (`1/true` to allow credentials; default `0/false`)
+
+For local dev with the Vite frontend:
+
+- `SCAMEVO_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173`
+
+Health check:
+
+- `GET http://127.0.0.1:8000/health`
+
+OpenAPI:
+
+- `http://127.0.0.1:8000/docs`
+
+## Connect Backend ↔ Frontend (Dev)
+
+### 1) Backend `.env`
+
+Recommended backend env values for local dev:
+
+- `SCAMEVO_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173`
+- `SCAMEVO_CORS_ALLOW_CREDENTIALS=0`
+
+Start the backend:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+```
+
+### 2) Frontend `.env`
+
+In the frontend repo (`Scam-Evo`), set:
+
+- `VITE_API_BASE_URL=http://127.0.0.1:8000`
+- `VITE_API_WITH_CREDENTIALS=false`
+
+Start the frontend:
+
+```bash
+npm install
+npm run dev
+```
+
+Open:
+
+- `http://localhost:5173`
+
 Health check:
 
 - `GET http://127.0.0.1:8000/health`
@@ -106,9 +158,38 @@ OpenAPI:
 
 ## Testing
 
+Backend unit/integration tests:
+
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
+
+Note: the test suite forces SQLite and ignores `SCAMEVO_DATABASE_URL` to avoid depending on developer Postgres credentials.
+
+## Manual Testing (API + UI)
+
+### Quick API sanity checks
+
+- `GET /health`
+- `POST /dataset/upload` (multipart: `file` + `options`)
+- `POST /detector/train`
+- `GET /detector/evaluate`
+- `POST /adversarial/run` (requires `SCAMEVO_RESEARCH_MODE=1` and `SCAMEVO_DO_NOT_DEPLOY=1`)
+- `GET /robustness/report`
+
+### End-to-end UI checklist
+
+- **Dataset page**
+  - Upload a dataset `.json` file
+  - Confirm the table populates from backend sample rows
+- **Detector page**
+  - Confirm model trains automatically (tfidf baseline) and metrics render
+  - Confirm false negatives section shows real backend results
+- **Evolution page**
+  - Run adversarial simulation and verify timeline populates
+  - Click a round and verify the mutation diff updates
+- **Robustness page**
+  - Confirm robustness report loads (chart + run summary)
 
 ## Model testing (end-to-end demo)
 

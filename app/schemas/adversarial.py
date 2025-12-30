@@ -56,3 +56,40 @@ class RunRecord(BaseModel):
 class AdversarialHistoryResponse(BaseModel):
     runs: list[RunRecord]
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdversarialRoundRecord(BaseModel):
+    round: int
+    base_id: Optional[str] = None
+    base_label: int
+    base_text: Optional[str] = None
+    candidate_text: str
+    similarity: float
+    actions: Optional[list[str]] = None
+    scam_probability: Optional[float] = None
+    evasive: Optional[bool] = None
+    generator: Optional[dict[str, Any]] = None
+
+
+class AdversarialRoundRecordsResponse(BaseModel):
+    run_id: str
+    round: int
+    records: list[AdversarialRoundRecord]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdversarialRoundStats(BaseModel):
+    round: int
+    total_candidates: int
+    evasive_candidates: int
+    evasion_rate: float
+
+
+class AdversarialRunDetailResponse(BaseModel):
+    run_id: str
+    created_at: str
+    run_type: str
+    dataset_id: str
+    model_id: Optional[str] = None
+    rounds: int
+    per_round: list[AdversarialRoundStats]

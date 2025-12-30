@@ -45,6 +45,14 @@ def _sha256_bytes(data: bytes) -> str:
 def _normalize_label(raw: Any, opts: DatasetUploadOptions) -> Optional[int]:
     if raw is None:
         return None
+
+    if isinstance(raw, bool):
+        return int(raw)
+    if isinstance(raw, int) and raw in {0, 1}:
+        return int(raw)
+    if isinstance(raw, float) and raw in {0.0, 1.0}:
+        return int(raw)
+
     s = str(raw).strip().lower()
     if s in {v.lower() for v in opts.legit_label_values}:
         return 0
@@ -53,6 +61,13 @@ def _normalize_label(raw: Any, opts: DatasetUploadOptions) -> Optional[int]:
 
     if s in {"0", "1"}:
         return int(s)
+
+    try:
+        f = float(s)
+    except Exception:
+        f = None
+    if f in {0.0, 1.0}:
+        return int(f)
 
     return None
 
@@ -175,6 +190,98 @@ def _parse_csv(raw_text: str, opts: DatasetUploadOptions) -> list[dict[str, Any]
         exclude_meta = {k for k in [text_col, label_col] if k is not None}
         metadata = {k: v for k, v in row.items() if k not in exclude_meta}
         out.append({"label": int(label), "text": text, "metadata": metadata})
+
+    return out
+
+
+def _parse_xlsx(file_bytes: bytes, opts: DatasetUploadOptions) -> list[dict[str, Any]]:
+    try:
+        from openpyxl import load_workbook
+    except Exception as e:
+        raise ValueError(f"Missing dependency for .xlsx support: {e}")
+
+    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    ws = wb.active
+
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header = next(rows_iter)
+    except StopIteration:
+        return []
+
+    fieldnames: list[str] = []
+    for idx, v in enumerate(header):
+        name = str(v).strip() if v is not None else ""
+        if not name:
+            name = f"col_{idx}"
+        fieldnames.append(name)
+
+    text_col = _detect_text_column(fieldnames, opts)
+    label_col = _detect_label_column(fieldnames, opts)
+    if label_col is None and opts.default_label is None:
+        raise ValueError(
+            f"Could not detect label column. Found columns={fieldnames}. "
+            f"Provide label_column explicitly or set default_label."
+        )
+
+    out: list[dict[str, Any]] = []
+    for row in rows_iter:
+        values = {fieldnames[i]: row[i] if i < len(row) else None for i in range(len(fieldnames))}
+
+        if text_col is not None:
+            text = str(values.get(text_col) or "").strip()
+        else:
+            exclude = {k for k in [label_col] if k is not None}
+            text = _build_structured_text(values, exclude)
+        if not text:
+            continue
+
+        if label_col is None:
+            label = opts.default_label
+        else:
+            label = _normalize_label(values.get(label_col), opts)
+        if label is None:
+            label = opts.default_label
+        if label not in {0, 1}:
+            continue
+
+        exclude_meta = {k for k in [text_col, label_col] if k is not None}
+        metadata = {k: v for k, v in values.items() if k not in exclude_meta}
+        out.append({"label": int(label), "text": text, "metadata": metadata})
+
+    return out
+
+
+def _parse_docx(file_bytes: bytes, opts: DatasetUploadOptions) -> list[dict[str, Any]]:
+    if opts.default_label not in {0, 1}:
+        raise ValueError(".docx upload requires default_label=0 or default_label=1")
+
+    try:
+        from docx import Document
+    except Exception as e:
+        raise ValueError(f"Missing dependency for .docx support: {e}")
+
+    doc = Document(io.BytesIO(file_bytes))
+
+    texts: list[str] = []
+    for p in doc.paragraphs:
+        t = (p.text or "").strip()
+        if t:
+            texts.append(t)
+
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if (c.text or "").strip()]
+            if cells:
+                texts.append(" | ".join(cells))
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for t in texts:
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append({"label": int(opts.default_label), "text": t, "metadata": {"source": "docx"}})
 
     return out
 
@@ -396,31 +503,42 @@ def ingest_dataset(
     raw_path = raw_dir / original_filename
     raw_path.write_bytes(file_bytes)
 
-    text = file_bytes.decode("utf-8", errors="replace")
-
     parsed: list[dict[str, Any]] = []
     lower_name = original_filename.lower()
 
-    if lower_name == "smsspamcollection" or "smsspamcollection" in lower_name:
-        parsed = _parse_sms_spam_collection(text)
-        source = "public_dataset"
-        label_mapping = {"ham": 0, "spam": 1}
-    elif lower_name.endswith(".txt"):
-        parsed = _parse_sms_spam_collection(text)
-        if not parsed:
-            raise ValueError("Unsupported .txt format. Expected tab-separated label and text")
-        source = "public_dataset"
-        label_mapping = {"ham": 0, "spam": 1, "smish": 1, "smishing": 1}
-    elif lower_name.endswith(".csv"):
-        parsed = _parse_csv(text, opts)
+    if lower_name.endswith(".xlsx"):
+        parsed = _parse_xlsx(file_bytes, opts)
         source = "public_dataset"
         label_mapping = {"legit_values": opts.legit_label_values, "scam_values": opts.scam_label_values}
-    elif lower_name.endswith(".json") or lower_name.endswith(".jsonl"):
-        parsed = _parse_json(text, opts)
+    elif lower_name.endswith(".docx"):
+        parsed = _parse_docx(file_bytes, opts)
         source = "public_dataset"
-        label_mapping = {"legit_values": opts.legit_label_values, "scam_values": opts.scam_label_values}
+        label_mapping = {"default_label": int(opts.default_label) if opts.default_label is not None else None}
     else:
-        raise ValueError("Unsupported file type. Upload .csv, .json/.jsonl, or SMSSpamCollection")
+        text = file_bytes.decode("utf-8", errors="replace")
+
+        if lower_name == "smsspamcollection" or "smsspamcollection" in lower_name:
+            parsed = _parse_sms_spam_collection(text)
+            source = "public_dataset"
+            label_mapping = {"ham": 0, "spam": 1}
+        elif lower_name.endswith(".txt"):
+            parsed = _parse_sms_spam_collection(text)
+            if not parsed:
+                raise ValueError("Unsupported .txt format. Expected tab-separated label and text")
+            source = "public_dataset"
+            label_mapping = {"ham": 0, "spam": 1, "smish": 1, "smishing": 1}
+        elif lower_name.endswith(".csv"):
+            parsed = _parse_csv(text, opts)
+            source = "public_dataset"
+            label_mapping = {"legit_values": opts.legit_label_values, "scam_values": opts.scam_label_values}
+        elif lower_name.endswith(".json") or lower_name.endswith(".jsonl"):
+            parsed = _parse_json(text, opts)
+            source = "public_dataset"
+            label_mapping = {"legit_values": opts.legit_label_values, "scam_values": opts.scam_label_values}
+        else:
+            raise ValueError(
+                "Unsupported file type. Upload .csv, .json/.jsonl, .txt, .xlsx, .docx, or SMSSpamCollection"
+            )
 
     parsed = _balance(parsed, opts.balance_strategy, opts.seed)
     canonical = _canonicalize_rows(parsed, source, opts.channel)

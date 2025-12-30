@@ -115,6 +115,7 @@ def run_adversarial(*, settings: Settings, req: AdversarialRunRequest) -> dict[s
                     "round": int(round_idx),
                     "base_id": base.get("id"),
                     "base_label": int(base.get("label", 0)),
+                    "base_text": base_text,
                     "candidate_text": g.get("text"),
                     "generator": g.get("metadata"),
                     "similarity": float(g.get("similarity", 0.0)),
@@ -182,3 +183,17 @@ def load_run_summary(*, artifacts_dir: str) -> dict[str, Any]:
     if not p.exists():
         raise FileNotFoundError("Run summary not found")
     return json.loads(p.read_text(encoding="utf-8"))
+
+
+def load_round_records(*, settings: Settings, run_id: str, round_idx: int, limit: int = 2000) -> list[dict[str, Any]]:
+    paths = run_paths(settings, run_id)
+    p = paths.root_dir / f"round_{int(round_idx)}.jsonl"
+    if not p.exists():
+        raise FileNotFoundError(f"Round file not found for run_id={run_id}, round={round_idx}")
+
+    out: list[dict[str, Any]] = []
+    for row in read_jsonl(p):
+        out.append(row)
+        if len(out) >= int(limit):
+            break
+    return out
