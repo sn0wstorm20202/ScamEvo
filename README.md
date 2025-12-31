@@ -43,11 +43,11 @@ Research-gated features:
     - For `adversarial`: evasion rate + counts.
     - For `adversarial_retrain`: baseline vs attacked vs defended metrics + deltas.
 - Inference threshold consistency
-   - Detection threshold is persisted per model in `storage/models/<model_id>/train_config.json`.
-   - `POST /detector/infer` and `GET /detector/evaluate` default to the persisted threshold unless you override.
+  - Detection threshold is persisted per model in `storage/models/<model_id>/train_config.json`.
+  - `POST /detector/infer` and `GET /detector/evaluate` default to the persisted threshold unless you override.
 - Structured logging + correlation IDs
-   - JSON logs.
-   - `X-Request-ID` is accepted/returned and attached to logs.
+  - JSON logs.
+  - `X-Request-ID` is accepted/returned and attached to logs.
 - Metadata DB
   - Uses **Neon Postgres** when `SCAMEVO_DATABASE_URL` is set.
   - Falls back to **SQLite** when not set (useful for local dev/tests).
@@ -274,6 +274,11 @@ At runtime the backend creates:
 - `storage/demo/<retrain_run_id>/robustness_report.json` (defended run)
 - `storage/demo/<retrain_run_id>/robustness_attack_report.json` (attack-only run)
 - `storage/demo/<retrain_run_id>/summary.md`
+
+## Storage & Database Links
+
+- **Storage artifacts and datasets**: https://drive.google.com/drive/folders/1JisyuUsd-seM8MDHisa4gDIHEtnhjnmf
+- **Database exports / backups**: https://drive.google.com/drive/folders/1JisyuUsd-seM8MDHisa4gDIHEtnhjnmf
 
 ## API usage quickstart
 

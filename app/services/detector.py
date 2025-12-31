@@ -12,6 +12,7 @@ from typing import Any, Iterable
 import joblib
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.dummy import DummyClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.pipeline import Pipeline
@@ -115,7 +116,7 @@ def _predict_proba(model, tokenizer, texts: list[str], max_length: int, device: 
     return probs, explanations
 
 
-def _tfidf_explain(pipeline: Pipeline, text: str, top_k: int = 12) -> list[tuple[str, float]]:
+def _tfidf_explain(pipeline: Pipeline, text: str, top_k: int = 10) -> list[dict[str, Any]]:
     tfidf = pipeline.named_steps.get("tfidf")
     clf = pipeline.named_steps.get("clf")
     if not isinstance(tfidf, TfidfVectorizer) or not isinstance(clf, LogisticRegression):
@@ -143,6 +144,32 @@ def _tfidf_explain(pipeline: Pipeline, text: str, top_k: int = 12) -> list[tuple
     return out
 
 
+def _tfidf_logreg_scam_probs(pipeline: Pipeline, texts: list[str]) -> list[float]:
+    if not texts:
+        return []
+
+    proba = pipeline.predict_proba(texts)
+    clf = getattr(pipeline, "named_steps", {}).get("clf")
+    classes = getattr(clf, "classes_", None)
+
+    if classes is None or len(getattr(classes, "__len__", lambda: 0)()) == 0:
+        if getattr(proba, "shape", (0, 0))[1] >= 2:
+            return proba[:, 1].tolist()
+        return proba[:, 0].tolist() if len(proba) else []
+
+    classes_list = list(classes)
+    if len(classes_list) == 1:
+        only = int(classes_list[0])
+        return [1.0 if only != 0 else 0.0 for _ in range(len(texts))]
+
+    if 0 in classes_list:
+        idx0 = int(classes_list.index(0))
+    else:
+        idx0 = int(np.argmin(np.array(classes_list, dtype=np.int64)))
+
+    return (1.0 - proba[:, idx0]).tolist()
+
+
 def _train_tfidf_logreg(*, settings: Settings, req: DetectorTrainRequest) -> dict[str, Any]:
     logger.info(
         "detector.train.start",
@@ -163,7 +190,7 @@ def _train_tfidf_logreg(*, settings: Settings, req: DetectorTrainRequest) -> dic
         raise ValueError("Train split is empty")
 
     texts_train = [r["text"] for r in train_rows]
-    y_train = np.array([int(r["label"]) for r in train_rows], dtype=np.int64)
+    y_train = np.array([1 if int(r["label"]) != 0 else 0 for r in train_rows], dtype=np.int64)
 
     ngram_min = int(getattr(req, "tfidf_ngram_min", 1))
     ngram_max = int(getattr(req, "tfidf_ngram_max", 2))
@@ -186,34 +213,51 @@ def _train_tfidf_logreg(*, settings: Settings, req: DetectorTrainRequest) -> dic
 
     logreg_class_weight = getattr(req, "logreg_class_weight", None)
 
-    pipeline = Pipeline(
-        [
-            (
-                "tfidf",
-                TfidfVectorizer(
-                    analyzer=analyzer,
-                    ngram_range=(ngram_min, ngram_max),
-                    max_features=max_features,
+    unique_y = np.unique(y_train)
+    if unique_y.size < 2:
+        const_label = int(unique_y[0])
+        pipeline = Pipeline(
+            [
+                (
+                    "tfidf",
+                    TfidfVectorizer(
+                        analyzer=analyzer,
+                        ngram_range=(ngram_min, ngram_max),
+                        max_features=max_features,
+                    ),
                 ),
-            ),
-            (
-                "clf",
-                LogisticRegression(
-                    max_iter=500,
-                    solver="liblinear",
-                    random_state=req.seed,
-                    C=logreg_c,
-                    class_weight=logreg_class_weight,
+                ("clf", DummyClassifier(strategy="constant", constant=const_label)),
+            ]
+        )
+    else:
+        pipeline = Pipeline(
+            [
+                (
+                    "tfidf",
+                    TfidfVectorizer(
+                        analyzer=analyzer,
+                        ngram_range=(ngram_min, ngram_max),
+                        max_features=max_features,
+                    ),
                 ),
-            ),
-        ]
-    )
+                (
+                    "clf",
+                    LogisticRegression(
+                        max_iter=500,
+                        solver="lbfgs",
+                        random_state=req.seed,
+                        C=logreg_c,
+                        class_weight=logreg_class_weight,
+                    ),
+                ),
+            ]
+        )
     pipeline.fit(texts_train, y_train)
 
     eval_use = eval_rows if eval_rows else train_rows
     texts_eval = [r["text"] for r in eval_use]
-    y_true = np.array([int(r["label"]) for r in eval_use], dtype=np.int64)
-    probs = pipeline.predict_proba(texts_eval)[:, 1].tolist()
+    y_true = np.array([1 if int(r["label"]) != 0 else 0 for r in eval_use], dtype=np.int64)
+    probs = _tfidf_logreg_scam_probs(pipeline, texts_eval)
     y_pred = (np.array(probs) >= float(req.detection_threshold)).astype(np.int64)
 
     metrics = {
@@ -523,7 +567,7 @@ def infer_detector(
 
     if bundle["backend"] == "tfidf_logreg":
         pipeline = bundle["pipeline"]
-        probs = pipeline.predict_proba(texts)[:, 1].tolist()
+        probs = _tfidf_logreg_scam_probs(pipeline, texts)
         explanations = [_tfidf_explain(pipeline, t) if explain else [] for t in texts]
     else:
         try:
@@ -585,7 +629,7 @@ def evaluate_model_on_dataset(
     texts = [r["text"] for r in rows]
     if bundle["backend"] == "tfidf_logreg":
         pipeline = bundle["pipeline"]
-        probs = pipeline.predict_proba(texts)[:, 1].tolist() if len(texts) else []
+        probs = _tfidf_logreg_scam_probs(pipeline, texts)
     else:
         try:
             import torch
@@ -599,7 +643,7 @@ def evaluate_model_on_dataset(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device)
         probs, _ = _predict_proba(model, tokenizer, texts, 192, device)
-    y_true = np.array([int(r["label"]) for r in rows], dtype=np.int64)
+    y_true = np.array([1 if int(r["label"]) != 0 else 0 for r in rows], dtype=np.int64)
     y_pred = (np.array(probs) >= float(detection_threshold)).astype(np.int64)
 
     metrics = {
@@ -612,8 +656,8 @@ def evaluate_model_on_dataset(
     }
 
     false_negatives: list[dict[str, Any]] = []
-    for r, p, pred in zip(rows, probs, y_pred.tolist()):
-        if int(r["label"]) == 1 and int(pred) == 0:
+    for r, p, pred, yt in zip(rows, probs, y_pred.tolist(), y_true.tolist()):
+        if int(yt) == 1 and int(pred) == 0:
             false_negatives.append({"id": r.get("id"), "text": r.get("text"), "scam_probability": float(p)})
 
     paths = model_paths(settings, model_id)
